@@ -30,162 +30,6 @@ BACKEND_URL = "http://localhost:8000"
 st.title("Age Progression Timeline (Flexible Date Input)")
 
 # --- Timeline and magnification window at the top ---
-photo_files = st.session_state.photo_files if "photo_files" in st.session_state else []
-if photo_files:
-    # Build photo_dates for timeline display only (do not use widget state here)
-    photo_dates = []
-    current_year = datetime.date.today().year
-    prev_date = None
-    for i, file_dict in enumerate(photo_files):
-        imported = file_dict.get("imported", False)
-        imported_year = file_dict.get("date").year if imported and file_dict.get("date") else None
-        imported_month = file_dict.get("month") if imported else None
-        imported_day = file_dict.get("day") if imported else None
-        imported_month_specified = file_dict.get("month_specified") if imported else False
-        imported_day_specified = file_dict.get("day_specified") if imported else False
-        exif_year = file_dict.get("exif_year")
-        exif_month = file_dict.get("exif_month")
-        exif_day = file_dict.get("exif_day")
-        if prev_date is not None:
-            default_date = prev_date + datetime.timedelta(days=1)
-        else:
-            default_date = datetime.date.today()
-        year_options = list(range(1950, current_year+1))
-        if imported_year and imported_year in year_options:
-            year = imported_year
-        elif exif_year and exif_year in year_options:
-            year = exif_year
-        else:
-            year = default_date.year
-        if imported_month_specified and imported_month:
-            month = imported_month
-            month_specified = True
-        elif exif_month:
-            month = exif_month
-            month_specified = True
-        else:
-            month = None
-            month_specified = False
-        if imported_day_specified and imported_day:
-            day = imported_day
-            day_specified = True
-        elif exif_day:
-            day = exif_day
-            day_specified = True
-        else:
-            day = None
-            day_specified = False
-        if not month_specified:
-            date = datetime.date(int(year), 1, 1)
-            display_str = f"{year}--"
-        elif month_specified and not day_specified:
-            date = datetime.date(int(year), int(month), 1)
-            display_str = f"{year}-{int(month):02d}-"
-        else:
-            date = datetime.date(int(year), int(month), int(day)) if day_specified else datetime.date(int(year), int(month), 1)
-            display_str = date.strftime("%Y-%m-%d") if day_specified else f"{year}-{int(month):02d}"
-        photo_dates.append({"file_dict": file_dict, "date": date, "display": display_str, "month_specified": month_specified, "day_specified": day_specified, "month": int(month) if month_specified else None, "day": int(day) if day_specified else None})
-        prev_date = date
-    # Sort by date
-    photo_dates.sort(key=lambda x: x["date"])
-    # --- Horizontal, scrollable, proportional timeline with gap markers ---
-    min_date = min([x["date"] for x in photo_dates])
-    max_date = max([x["date"] for x in photo_dates])
-    total_days = (max_date - min_date).days or 1
-    GAP_THRESHOLD = 730  # days (2 years)
-    # Calculate ages for each photo
-    ages = []
-    for pd in photo_dates:
-        if user_birthday:
-            age_years = (pd["date"] - user_birthday).days / 365.25
-            ages.append(age_years)
-        else:
-            ages.append(None)
-    # (Removed duplicate timeline/magnification block here. See later in file for main timeline UI.)
-
-# Clean up session state if old UploadedFile objects are present
-if "photo_files" in st.session_state:
-    if any(not isinstance(f, dict) for f in st.session_state.photo_files):
-        st.session_state.photo_files = []
-
-if "photo_files" not in st.session_state:
-    st.session_state.photo_files = []
-
-# Add a flag to track if a ZIP has been imported
-if "zip_imported" not in st.session_state:
-    st.session_state["zip_imported"] = False
-
-if st.button("Reset Uploaded Photos"):
-    st.session_state.photo_files = []
-    st.session_state["zip_imported"] = False
-
-uploaded_files = st.file_uploader(
-    "Upload your timeline photos", type=["jpg", "jpeg", "png", "heic"], accept_multiple_files=True
-)
-
-def compress_image(file_bytes, max_dim=800, quality=50):
-    try:
-        img = Image.open(io.BytesIO(file_bytes))
-        # Resize if very large
-        if max(img.size) > max_dim:
-            ratio = max_dim / max(img.size)
-            new_size = (int(img.size[0]*ratio), int(img.size[1]*ratio))
-            img = img.resize(new_size, Image.LANCZOS)
-        else:
-            new_size = img.size
-        buf = io.BytesIO()
-        img = img.convert("RGB")
-        img.save(buf, format="JPEG", quality=quality, optimize=True)
-        return buf.getvalue(), new_size
-    except Exception as e:
-        st.warning(f"Could not compress image: {e}")
-        return file_bytes, None
-
-def get_exif_date(file_bytes):
-    try:
-        img = Image.open(io.BytesIO(file_bytes))
-        exif = img._getexif()
-        if not exif:
-            return None
-        for tag, value in exif.items():
-            decoded = ExifTags.TAGS.get(tag, tag)
-            if decoded == "DateTimeOriginal":
-                # Format: 'YYYY:MM:DD HH:MM:SS'
-                date_str = value.split(' ')[0]
-                parts = date_str.split(':')
-                if len(parts) == 3:
-                    year, month, day = map(int, parts)
-                    return year, month, day
-    except Exception:
-        pass
-    return None
-
-# Always compress on upload
-if uploaded_files:
-    for file in uploaded_files:
-        if not any(f["name"] == file.name for f in st.session_state.photo_files):
-            file_bytes = file.getvalue()
-            compressed_bytes, new_size = compress_image(file_bytes)
-            exif_date = get_exif_date(file_bytes)
-            file_dict = {
-                "name": file.name,
-                "bytes": compressed_bytes,
-                "type": "image/jpeg"
-            }
-            if exif_date:
-                year, month, day = exif_date
-                file_dict["exif_year"] = year
-                file_dict["exif_month"] = month
-                file_dict["exif_day"] = day
-            st.info(f"Compressed {file.name} to {len(compressed_bytes)//1024} KB" + (f" (resized to {new_size[0]}x{new_size[1]})" if new_size else ""))
-            st.session_state.photo_files.append(file_dict)
-
-# After all uploads, check total size
-if st.session_state.photo_files:
-    total_bytes = sum(len(f["bytes"]) for f in st.session_state.photo_files)
-    if total_bytes > 200 * 1024 * 1024:
-        st.warning(f"Total image data is {total_bytes//1024//1024} MB, which may exceed Streamlit's message size limit. Please remove some images or compress further.")
-
 photo_files = st.session_state.photo_files
 
 if photo_files:
@@ -288,13 +132,84 @@ if photo_files:
         st.session_state.photo_files = [f for f in st.session_state.photo_files if f["name"] not in remove_names]
         st.rerun()
 
-    # Do NOT sort photo_dates; preserve upload order
+    # Build photo_dates for timeline display only (do not use widget state here)
+    photo_dates = []
+    current_year = datetime.date.today().year
+    prev_date = None
+    for i, file_dict in enumerate(photo_files):
+        imported = file_dict.get("imported", False)
+        imported_year = file_dict.get("date").year if imported and file_dict.get("date") else None
+        imported_month = file_dict.get("month") if imported else None
+        imported_day = file_dict.get("day") if imported else None
+        imported_month_specified = file_dict.get("month_specified") if imported else False
+        imported_day_specified = file_dict.get("day_specified") if imported else False
+        exif_year = file_dict.get("exif_year")
+        exif_month = file_dict.get("exif_month")
+        exif_day = file_dict.get("exif_day")
+        if prev_date is not None:
+            default_date = prev_date + datetime.timedelta(days=1)
+        else:
+            default_date = datetime.date.today()
+        year_options = list(range(1950, current_year+1))
+        if imported_year and imported_year in year_options:
+            year = imported_year
+        elif exif_year and exif_year in year_options:
+            year = exif_year
+        else:
+            year = default_date.year
+        if imported_month_specified and imported_month:
+            month = imported_month
+            month_specified = True
+        elif exif_month:
+            month = exif_month
+            month_specified = True
+        else:
+            month = None
+            month_specified = False
+        if imported_day_specified and imported_day:
+            day = imported_day
+            day_specified = True
+        elif exif_day:
+            day = exif_day
+            day_specified = True
+        else:
+            day = None
+            day_specified = False
+        if not month_specified:
+            date = datetime.date(int(year), 1, 1)
+            display_str = f"{year}--"
+        elif month_specified and not day_specified:
+            date = datetime.date(int(year), int(month), 1)
+            display_str = f"{year}-{int(month):02d}-"
+        else:
+            date = datetime.date(int(year), int(month), int(day)) if day_specified else datetime.date(int(year), int(month), 1)
+            display_str = date.strftime("%Y-%m-%d") if day_specified else f"{year}-{int(month):02d}"
+        photo_dates.append({"file_dict": file_dict, "date": date, "display": display_str, "month_specified": month_specified, "day_specified": day_specified, "month": int(month) if month_specified else None, "day": int(day) if day_specified else None})
+        prev_date = date
+    # Sort by date
+    photo_dates.sort(key=lambda x: x["date"])
+    # --- Horizontal, scrollable, proportional timeline with gap markers ---
+    min_date = min([x["date"] for x in photo_dates])
+    max_date = max([x["date"] for x in photo_dates])
+    total_days = (max_date - min_date).days or 1
+    GAP_THRESHOLD = 730  # days (2 years)
+    # Build a sorted copy of photo_dates for timeline display
+    sorted_photo_dates = sorted(photo_dates, key=lambda x: x["date"])
 
-    # Add a slider to select the magnified photo, labeled by age
-    selected_idx = st.slider("Magnified photo (by age)", 0, len(photo_dates)-1, 0, key="magnified_photo_slider")
+    # Calculate ages for each photo (in sorted order)
+    ages = []
+    for pd in sorted_photo_dates:
+        if user_birthday:
+            age_years = (pd["date"] - user_birthday).days / 365.25
+            ages.append(age_years)
+        else:
+            ages.append(None)
+
+    # Add a slider to select the magnified photo, labeled by age (in sorted order)
+    selected_idx = st.slider("Magnified photo (by age)", 0, len(sorted_photo_dates)-1, 0, key="magnified_photo_slider")
 
     # Magnification window above the timeline
-    selected_file_dict = photo_dates[selected_idx]["file_dict"]
+    selected_file_dict = sorted_photo_dates[selected_idx]["file_dict"]
     selected_age = ages[selected_idx] if user_birthday else None
     try:
         mag_img = Image.open(io.BytesIO(selected_file_dict["bytes"]))
@@ -313,7 +228,7 @@ if photo_files:
     st.markdown(magnify_html, unsafe_allow_html=True)
 
     html = "<div style='display: flex; overflow-x: auto; align-items: flex-end; height: 260px; padding-bottom: 16px;'>"
-    for i, pd in enumerate(photo_dates):
+    for i, pd in enumerate(sorted_photo_dates):
         file_dict = pd["file_dict"]
         date = pd["date"]
         # Use robust label logic with padding for alignment
@@ -342,8 +257,8 @@ if photo_files:
             <span style='{label_style}'>{label}</span>
             {age_str}
         </div>"""
-        if i < len(photo_dates) - 1:
-            days_gap = (photo_dates[i+1]["date"] - pd["date"]).days
+        if i < len(sorted_photo_dates) - 1:
+            days_gap = (sorted_photo_dates[i+1]["date"] - pd["date"]).days
             px_gap = int(40 + 300 * days_gap / total_days)
             if days_gap > GAP_THRESHOLD:
                 html += f"""
@@ -523,10 +438,16 @@ if not st.session_state.get("zip_imported"):
     imported_zip = st.file_uploader("Import Timeline ZIP (to restore timeline)", type=["zip"], key="import_zip")
     if imported_zip is not None:
         with zipfile.ZipFile(imported_zip) as zf:
-            if "timeline.csv" not in zf.namelist():
-                st.error("timeline.csv not found in ZIP. Please upload a valid exported timeline ZIP.")
+            # Try to find timeline.csv robustly (case-insensitive, any folder)
+            csv_name = None
+            for name in zf.namelist():
+                if name.lower().endswith("timeline.csv"):
+                    csv_name = name
+                    break
+            if not csv_name:
+                st.error("timeline.csv not found in ZIP (make sure it is at the root or in a subfolder). Please upload a valid exported timeline ZIP.")
             else:
-                csv_file = zf.open("timeline.csv")
+                csv_file = zf.open(csv_name)
                 reader = csv.reader(io.TextIOWrapper(csv_file))
                 rows = list(reader)
                 if len(rows) < 2:
