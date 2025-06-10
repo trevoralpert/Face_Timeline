@@ -30,6 +30,8 @@ BACKEND_URL = "http://localhost:8000"
 st.title("Age Progression Timeline (Flexible Date Input)")
 
 # --- Timeline and magnification window at the top ---
+if "photo_files" not in st.session_state:
+    st.session_state.photo_files = []
 photo_files = st.session_state.photo_files
 
 if photo_files:
@@ -49,6 +51,18 @@ if photo_files:
             # Use index and filename as key for uniqueness
             if st.button("Remove", key=f"remove_date_{i}_{file_dict['name']}"):
                 remove_names.append(file_dict["name"])
+            # --- Rotate button ---
+            if st.button("Rotate 90°", key=f"rotate_{i}_{file_dict['name']}"):
+                try:
+                    img = Image.open(io.BytesIO(file_dict["bytes"]))
+                    rotated_img = img.rotate(-90, expand=True)
+                    buf = io.BytesIO()
+                    rotated_img.save(buf, format="JPEG", quality=50, optimize=True)
+                    file_dict["bytes"] = buf.getvalue()
+                    st.session_state.photo_files[i]["bytes"] = buf.getvalue()
+                    st.rerun()
+                except Exception as e:
+                    st.warning(f"Could not rotate image: {e}")
         with col2:
             # --- Use imported date info if present ---
             imported = file_dict.get("imported", False)
@@ -275,12 +289,26 @@ if photo_files:
     st.markdown(html, unsafe_allow_html=True)
 
     # --- Export Timeline as ZIP ---
-    def create_timeline_image(photo_dates, width=4000, height=600):
+    def create_timeline_image(photo_dates, min_gap=40, img_size=80, height=600):
         if not photo_dates:
             return None
         min_date = min([x["date"] for x in photo_dates])
         max_date = max([x["date"] for x in photo_dates])
         total_days = (max_date - min_date).days or 1
+        n = len(photo_dates)
+        # Calculate minimum width needed so images don't overlap
+        # Place images at least min_gap+img_size apart, or proportionally by date
+        # First, calculate proportional x positions
+        x_positions = []
+        for pd in photo_dates:
+            days_from_start = (pd["date"] - min_date).days
+            x = int((days_from_start / total_days) * (n * (img_size + min_gap)))
+            x_positions.append(x)
+        # Ensure minimum gap between images
+        for i in range(1, n):
+            if x_positions[i] < x_positions[i-1] + img_size + min_gap:
+                x_positions[i] = x_positions[i-1] + img_size + min_gap
+        width = max(x_positions[-1] + img_size + min_gap, 1200)
         img = Image.new("RGB", (width, height), "white")
         draw = ImageDraw.Draw(img)
         y = height // 2
@@ -288,26 +316,30 @@ if photo_files:
         draw.line((50, y, width-50, y), fill="black", width=3)
         # Try to load a font, fallback to default
         try:
-            font = ImageFont.truetype("arial.ttf", 18)
+            font = ImageFont.truetype("arial.ttf", 32)
         except:
             font = ImageFont.load_default()
-        # Place each photo
-        for pd in photo_dates:
-            days_from_start = (pd["date"] - min_date).days
-            x = 50 + int((width-100) * days_from_start / total_days)
-            # Paste photo (resize to 80x80)
+        # Place each photo and label
+        for i, pd in enumerate(photo_dates):
+            x = x_positions[i] + 50
+            # Paste photo (resize to img_size x img_size)
             try:
-                photo = Image.open(io.BytesIO(pd["file_dict"]["bytes"])).resize((80, 80))
-                img.paste(photo, (x-40, y-90))
+                photo = Image.open(io.BytesIO(pd["file_dict"]["bytes"])).resize((img_size, img_size))
+                img.paste(photo, (x-img_size//2, y-img_size-20))
             except Exception:
                 pass
-            # Draw label vertically with more margin and width
+            # Draw label horizontally, larger font, with white background for clarity
             label = pd["display"]
-            label_img = Image.new("RGBA", (30, 140), (255, 255, 255, 0))
-            label_draw = ImageDraw.Draw(label_img)
-            label_draw.text((15, 0), label, fill="black", font=font, anchor="ma")
-            label_img = label_img.rotate(90, expand=1)
-            img.paste(label_img, (x-15, y+110), label_img)
+            try:
+                bbox = draw.textbbox((0, 0), label, font=font)
+                label_w, label_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            except AttributeError:
+                label_w, label_h = draw.textsize(label, font=font)
+            label_x = x - label_w//2
+            label_y = y + img_size//2 + 30
+            # Draw white rectangle behind text for readability
+            draw.rectangle([label_x-8, label_y-4, label_x+label_w+8, label_y+label_h+4], fill="white")
+            draw.text((label_x, label_y), label, fill="black", font=font)
         return img
 
     def export_timeline_zip(photo_dates):
@@ -492,4 +524,67 @@ if not st.session_state.get("zip_imported"):
                     st.session_state["zip_imported"] = True
                     st.rerun()
 else:
-    st.info("Timeline ZIP imported. To import another, reset uploads.") 
+    st.info("Timeline ZIP imported. To import another, reset uploads.")
+
+uploaded_files = st.file_uploader(
+    "Upload your timeline photos", 
+    type=["jpg", "jpeg", "png", "heic"], 
+    accept_multiple_files=True
+)
+
+def compress_image(file_bytes, max_dim=800, quality=50):
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+        # Resize if very large
+        if max(img.size) > max_dim:
+            ratio = max_dim / max(img.size)
+            new_size = (int(img.size[0]*ratio), int(img.size[1]*ratio))
+            img = img.resize(new_size, Image.LANCZOS)
+        else:
+            new_size = img.size
+        buf = io.BytesIO()
+        img = img.convert("RGB")
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
+        return buf.getvalue(), new_size
+    except Exception as e:
+        st.warning(f"Could not compress image: {e}")
+        return file_bytes, None
+
+def get_exif_date(file_bytes):
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+        exif = img._getexif()
+        if not exif:
+            return None
+        for tag, value in exif.items():
+            decoded = ExifTags.TAGS.get(tag, tag)
+            if decoded == "DateTimeOriginal":
+                # Format: 'YYYY:MM:DD HH:MM:SS'
+                date_str = value.split(' ')[0]
+                parts = date_str.split(':')
+                if len(parts) == 3:
+                    year, month, day = map(int, parts)
+                    return year, month, day
+    except Exception:
+        pass
+    return None
+
+# Always compress on upload
+if uploaded_files:
+    for file in uploaded_files:
+        if not any(f["name"] == file.name for f in st.session_state.photo_files):
+            file_bytes = file.getvalue()
+            compressed_bytes, new_size = compress_image(file_bytes)
+            exif_date = get_exif_date(file_bytes)
+            file_dict = {
+                "name": file.name,
+                "bytes": compressed_bytes,
+                "type": "image/jpeg"
+            }
+            if exif_date:
+                year, month, day = exif_date
+                file_dict["exif_year"] = year
+                file_dict["exif_month"] = month
+                file_dict["exif_day"] = day
+            st.info(f"Compressed {file.name} to {len(compressed_bytes)//1024} KB" + (f" (resized to {new_size[0]}x{new_size[1]})" if new_size else ""))
+            st.session_state.photo_files.append(file_dict) 
