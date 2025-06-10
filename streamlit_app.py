@@ -208,11 +208,11 @@ if photo_files:
         with col2:
             # --- Use imported date info if present ---
             imported = file_dict.get("imported", False)
-            imported_year = file_dict.get("date").year if imported and file_dict.get("date") else None
-            imported_month = file_dict.get("month") if imported else None
-            imported_day = file_dict.get("day") if imported else None
-            imported_month_specified = file_dict.get("month_specified") if imported else False
-            imported_day_specified = file_dict.get("day_specified") if imported else False
+            imported_year = file_dict.get("year")
+            imported_month = file_dict.get("month")
+            imported_day = file_dict.get("day")
+            imported_month_specified = file_dict.get("month_specified", False)
+            imported_day_specified = file_dict.get("day_specified", False)
             exif_year = file_dict.get("exif_year")
             exif_month = file_dict.get("exif_month")
             exif_day = file_dict.get("exif_day")
@@ -273,30 +273,22 @@ if photo_files:
             else:
                 date = datetime.date(int(year), int(month), int(day)) if day_specified else datetime.date(int(year), int(month), 1)
                 display_str = date.strftime("%Y-%m-%d") if day_specified else f"{year}-{int(month):02d}"
-            photo_dates.append({"file_dict": file_dict, "date": date, "display": display_str, "month_specified": month_specified, "day_specified": day_specified, "month": int(month) if month_specified else None, "day": int(day) if day_specified else None})
+            # --- Persist date info in session state ---
+            file_dict["year"] = int(year)
+            file_dict["month"] = int(month) if month_specified else None
+            file_dict["day"] = int(day) if day_specified else None
+            file_dict["month_specified"] = month_specified
+            file_dict["day_specified"] = day_specified
+            file_dict["date"] = date
+            file_dict["display"] = display_str
             prev_date = date
+        photo_dates.append({"file_dict": file_dict, "date": file_dict["date"], "display": file_dict["display"], "month_specified": file_dict["month_specified"], "day_specified": file_dict["day_specified"], "month": file_dict["month"], "day": file_dict["day"]})
     # Actually remove after the loop (to avoid index issues)
     if remove_names:
         st.session_state.photo_files = [f for f in st.session_state.photo_files if f["name"] not in remove_names]
         st.rerun()
 
-    # Sort by date
-    photo_dates.sort(key=lambda x: x["date"])
-
-    # --- Horizontal, scrollable, proportional timeline with gap markers ---
-    min_date = min([x["date"] for x in photo_dates])
-    max_date = max([x["date"] for x in photo_dates])
-    total_days = (max_date - min_date).days or 1
-    GAP_THRESHOLD = 730  # days (2 years)
-
-    # Calculate ages for each photo
-    ages = []
-    for pd in photo_dates:
-        if user_birthday:
-            age_years = (pd["date"] - user_birthday).days / 365.25
-            ages.append(age_years)
-        else:
-            ages.append(None)
+    # Do NOT sort photo_dates; preserve upload order
 
     # Add a slider to select the magnified photo, labeled by age
     selected_idx = st.slider("Magnified photo (by age)", 0, len(photo_dates)-1, 0, key="magnified_photo_slider")
@@ -546,24 +538,20 @@ if not st.session_state.get("zip_imported"):
                         if filename not in zf.namelist():
                             continue
                         img_bytes = zf.read(filename)
-                        # Parse label for year/month/day
+                        # Parse label for year/month/day, handling padded hyphens
                         parts = label.split("-")
                         year = int(parts[0])
-                        month = int(parts[1]) if len(parts) > 1 else None
-                        day = int(parts[2]) if len(parts) > 2 else None
+                        month = int(parts[1]) if len(parts) > 1 and parts[1] and parts[1] != "" else None
+                        day = int(parts[2]) if len(parts) > 2 and parts[2] and parts[2] != "" else None
+                        month_specified = month is not None
+                        day_specified = day is not None
                         # Compose display string and flags
-                        if len(parts) == 1:
-                            display_str = f"{year}"
-                            month_specified = False
-                            day_specified = False
-                        elif len(parts) == 2:
-                            display_str = f"{year}-{int(month):02d}"
-                            month_specified = True
-                            day_specified = False
+                        if not month_specified:
+                            display_str = f"{year}--"
+                        elif month_specified and not day_specified:
+                            display_str = f"{year}-{int(month):02d}-"
                         else:
                             display_str = f"{year}-{int(month):02d}-{int(day):02d}"
-                            month_specified = True
-                            day_specified = True
                         # Compose date object (use 1 for missing month/day)
                         date = datetime.date(year, month if month else 1, day if day else 1)
                         st.session_state.photo_files.append({
@@ -575,6 +563,7 @@ if not st.session_state.get("zip_imported"):
                             "display": display_str,
                             "month_specified": month_specified,
                             "day_specified": day_specified,
+                            "year": year,
                             "month": month,
                             "day": day
                         })
